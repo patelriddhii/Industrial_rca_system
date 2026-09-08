@@ -9,7 +9,7 @@ class ToolWearMachine:
 
     MACHINE_TYPE = "tool_wear_machine"
     MAINTENANCE_INTERVAL = 100
-    INCIDENT_START_CYCLE = 600
+    INCIDENT_START_CYCLE = 615
     INCIDENT_MULTIPLIER = 3.0
 
     def __init__(self, machine_id):
@@ -54,7 +54,7 @@ class CalibrationDriftMachine:
 
     MACHINE_TYPE = "calibration_drift_machine"
     MAINTENANCE_INTERVAL = 100
-    INCIDENT_START_CYCLE = 400
+    INCIDENT_START_CYCLE = 385
     INCIDENT_MULTIPLIER = 4.0
 
     def __init__(self, machine_id):
@@ -150,7 +150,7 @@ class BearingDegradationMachine:
 
     MACHINE_TYPE = "bearing_degradation_machine"
     MAINTENANCE_INTERVAL = 150
-    INCIDENT_START_CYCLE = 500
+    INCIDENT_START_CYCLE = 520
     INCIDENT_MULTIPLIER = 3.5
     TEMPERATURE_LAG_FACTOR = 0.1
 
