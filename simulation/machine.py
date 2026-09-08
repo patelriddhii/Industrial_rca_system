@@ -149,15 +149,15 @@ class BearingDegradationMachine:
     """
 
     MACHINE_TYPE = "bearing_degradation_machine"
-    MAINTENANCE_INTERVAL = 150  # bearings inspected/replaced less frequently than tools
+    MAINTENANCE_INTERVAL = 150
     INCIDENT_START_CYCLE = 500
     INCIDENT_MULTIPLIER = 3.5
-    TEMPERATURE_LAG_FACTOR = 0.1  # temperature moves toward vibration-driven target gradually
+    TEMPERATURE_LAG_FACTOR = 0.1
 
     def __init__(self, machine_id):
         self.machine_id = machine_id
         self.bearing_degradation = 0.0
-        self.temperature = 40.0  # baseline ambient-ish operating temperature
+        self.temperature = 40.0
 
     def run_cycle(self, cycle_number):
         degradation_increment = np.random.uniform(0.01, 0.03)
@@ -170,28 +170,19 @@ class BearingDegradationMachine:
             self.bearing_degradation = 0.0
             maintenance_event = True
 
-        # Vibration reacts immediately to current degradation level
         vibration = 0.5 + (self.bearing_degradation * 0.4) + np.random.uniform(-0.05, 0.05)
 
-        # Temperature lags behind — moves gradually toward a degradation-driven target
-        # rather than jumping instantly, simulating thermal inertia
         temperature_target = 40 + (self.bearing_degradation * 3.0)
         self.temperature += (temperature_target - self.temperature) * self.TEMPERATURE_LAG_FACTOR
         self.temperature += np.random.uniform(-0.3, 0.3)
 
-        # Motor current rises as the motor works harder against a degrading bearing
         motor_current = 5.0 + (self.bearing_degradation * 0.35) + np.random.uniform(-0.1, 0.1)
 
-        # Cycle time increases only gradually — mechanical degradation slows
-        # the machine down less directly than tool wear does
         cycle_time = 10 + (self.bearing_degradation * 0.8)
 
-        # Downtime risk only becomes meaningful once degradation is well advanced
         downtime_probability = min(max(0.0, (self.bearing_degradation - 5.0) * 0.03), 0.6)
         downtime = np.random.random() < downtime_probability
 
-        # Defects rise only mildly — this failure mode is primarily a maintenance
-        # signal, not primarily a quality signal, by design
         defect_probability = min(0.01 + (self.bearing_degradation * 0.006), 0.5)
         defect = np.random.random() < defect_probability
 
@@ -220,6 +211,108 @@ class BearingDegradationMachine:
         return production_record, sensor_readings
 
 
+class MaterialBatch:
+    """Represents one raw-material batch loaded into a machine.
+    Not a Machine subclass — this is external context fed into MaterialBatchMachine."""
+
+    def __init__(self, batch_id, quality_score, supplier, introduced_cycle,
+                 duration_cycles, is_incident_batch=False):
+        self.batch_id = batch_id
+        self.quality_score = quality_score  # 0.0 (bad) to 1.0 (good)
+        self.supplier = supplier
+        self.introduced_cycle = introduced_cycle
+        self.duration_cycles = duration_cycles
+        self.is_incident_batch = is_incident_batch
+
+
+def generate_batch_schedule(n_cycles=1000, batch_duration=100,
+                             incident_batch_index=6, incident_quality=0.35):
+    """Creates a sequential, non-overlapping batch schedule covering the full run.
+    One batch (by index, 0-based) is deliberately marked defective."""
+    n_batches = n_cycles // batch_duration
+    batches = []
+    for i in range(n_batches):
+        is_incident = (i == incident_batch_index)
+        quality = incident_quality if is_incident else np.random.uniform(0.85, 0.98)
+        batches.append(MaterialBatch(
+            batch_id=f"B{100 + i}",
+            quality_score=quality,
+            supplier="SupplierA" if i % 2 == 0 else "SupplierB",
+            introduced_cycle=(i * batch_duration) + 1,
+            duration_cycles=batch_duration,
+            is_incident_batch=is_incident
+        ))
+    return batches
+
+
+def get_active_batch(cycle_number, batches):
+    """Finds which batch is active at a given cycle."""
+    for batch in batches:
+        if batch.introduced_cycle <= cycle_number < batch.introduced_cycle + batch.duration_cycles:
+            return batch
+    return batches[-1]
+
+
+class MaterialBatchMachine:
+    """Machine failure mode: defects driven entirely by raw-material batch quality,
+    NOT by machine condition. Machine telemetry stays healthy throughout — this is
+    the key property that lets the Maintenance Agent correctly CONTRADICT a mechanical
+    hypothesis while Material/Quality agents SUPPORT a batch-related one.
+
+    Defect pressure uses exponential smoothing toward the active batch's quality,
+    producing gradual onset AND gradual recovery rather than an instant step —
+    simulating inspection lag and residual bad units still in the pipeline.
+    """
+
+    MACHINE_TYPE = "material_batch_machine"
+    MAINTENANCE_INTERVAL = 100
+    SMOOTHING_ALPHA = 0.06  # lower = slower response to batch quality changes
+
+    def __init__(self, machine_id):
+        self.machine_id = machine_id
+        self.machine_health = 0.0  # stays boring, like M3 — machine itself is fine
+        self.defect_pressure = 0.05  # starts low/normal
+
+    def run_cycle(self, cycle_number, active_batch):
+        self.machine_health += np.random.uniform(0.01, 0.03)
+
+        maintenance_event = False
+        if cycle_number % self.MAINTENANCE_INTERVAL == 0:
+            self.machine_health = 0.0
+            maintenance_event = True
+
+        cycle_time = 10 + np.random.uniform(-0.3, 0.3)
+
+        batch_defect_target = (1 - active_batch.quality_score) * 0.6
+        self.defect_pressure = (
+            self.SMOOTHING_ALPHA * batch_defect_target
+            + (1 - self.SMOOTHING_ALPHA) * self.defect_pressure
+        )
+
+        defect_probability = min(0.02 + self.defect_pressure, 0.9)
+        defect = np.random.random() < defect_probability
+
+        production_record = {
+            "machine_id": self.machine_id,
+            "machine_type": self.MACHINE_TYPE,
+            "cycle": cycle_number,
+            "cycle_time": cycle_time,
+            "defect": int(defect),
+            "maintenance_event": int(maintenance_event),
+            "maintenance_action": "routine_check" if maintenance_event else None,
+            "active_batch_id": active_batch.batch_id
+        }
+
+        sensor_readings = [
+            {"machine_id": self.machine_id, "cycle": cycle_number,
+             "sensor_name": "machine_health", "sensor_value": self.machine_health},
+            {"machine_id": self.machine_id, "cycle": cycle_number,
+             "sensor_name": "defect_pressure", "sensor_value": self.defect_pressure},
+        ]
+
+        return production_record, sensor_readings
+
+
 def run_simulation(n_cycles=1000, seed=42):
     np.random.seed(seed)
 
@@ -229,6 +322,8 @@ def run_simulation(n_cycles=1000, seed=42):
         HealthyControlMachine(machine_id="M3"),
         BearingDegradationMachine(machine_id="M4"),
     ]
+    m5 = MaterialBatchMachine(machine_id="M5")
+    batch_schedule = generate_batch_schedule(n_cycles=n_cycles)
 
     production_data = []
     sensor_data = []
@@ -239,7 +334,6 @@ def run_simulation(n_cycles=1000, seed=42):
             production_record, sensor_readings = machine.run_cycle(cycle)
             production_data.append(production_record)
             sensor_data.extend(sensor_readings)
-
             if production_record["maintenance_event"]:
                 maintenance_log.append({
                     "machine_id": machine.machine_id,
@@ -248,9 +342,32 @@ def run_simulation(n_cycles=1000, seed=42):
                     "reason": "scheduled_maintenance"
                 })
 
+        active_batch = get_active_batch(cycle, batch_schedule)
+        production_record, sensor_readings = m5.run_cycle(cycle, active_batch)
+        production_data.append(production_record)
+        sensor_data.extend(sensor_readings)
+        if production_record["maintenance_event"]:
+            maintenance_log.append({
+                "machine_id": m5.machine_id,
+                "cycle": cycle,
+                "action": production_record["maintenance_action"],
+                "reason": "scheduled_maintenance"
+            })
+
     production_df = pd.DataFrame(production_data)
     sensor_df = pd.DataFrame(sensor_data)
     maintenance_df = pd.DataFrame(maintenance_log)
+
+    batches_df = pd.DataFrame([{
+        "batch_id": b.batch_id,
+        "supplier": b.supplier,
+        "quality_score": b.quality_score,
+        "introduced_cycle": b.introduced_cycle,
+        "duration_cycles": b.duration_cycles,
+        "is_incident_batch": b.is_incident_batch
+    } for b in batch_schedule])
+
+    incident_batch = next(b for b in batch_schedule if b.is_incident_batch)
 
     # Note: M3 deliberately has NO row here — it's a negative/control case
     incidents_df = pd.DataFrame([
@@ -275,27 +392,38 @@ def run_simulation(n_cycles=1000, seed=42):
             "root_cause": "bearing_degradation",
             "description": "Simulated bearing fault causing 3.5x normal degradation rate, "
                             "visible primarily through vibration/temperature/motor current"
+        },
+        {
+            "incident_id": 4,
+            "machine_id": "M5",
+            "start_cycle": incident_batch.introduced_cycle,
+            "root_cause": "defective_material_batch",
+            "description": f"Batch {incident_batch.batch_id} introduced with "
+                            f"quality_score={incident_batch.quality_score:.2f}; "
+                            f"machine telemetry remained normal throughout"
         }
     ])
 
-    return production_df, sensor_df, maintenance_df, incidents_df
+    return production_df, sensor_df, maintenance_df, incidents_df, batches_df
 
 
 if __name__ == "__main__":
     os.makedirs("data", exist_ok=True)
 
-    production_df, sensor_df, maintenance_df, incidents_df = run_simulation(n_cycles=1000)
+    production_df, sensor_df, maintenance_df, incidents_df, batches_df = run_simulation(n_cycles=1000)
 
     production_df.to_csv("data/machine_data.csv", index=False)
     sensor_df.to_csv("data/sensor_readings.csv", index=False)
     maintenance_df.to_csv("data/maintenance_log.csv", index=False)
     incidents_df.to_csv("data/incidents.csv", index=False)
+    batches_df.to_csv("data/material_batches.csv", index=False)
 
     print("Data saved successfully!")
     print(f"\nTotal maintenance events: {len(maintenance_df)}")
     print(maintenance_df["action"].value_counts())
     print(f"\nProduction data sample:\n{production_df.head()}")
     print(f"\nSensor data sample:\n{sensor_df.head()}")
+    print(f"\nBatch schedule:\n{batches_df}")
 
     machine_ids = production_df["machine_id"].unique()
     fig, axes = plt.subplots(len(machine_ids), 1, figsize=(10, 4 * len(machine_ids)), sharex=True)
@@ -323,14 +451,12 @@ if __name__ == "__main__":
     plt.savefig("data/defect_rate_by_machine.png")
     plt.show()
 
-    # Second figure: M4's telemetry signature specifically — this is the plot
-    # that should show vibration/temperature/current rising while defect rate
-    # (in the plot above) barely moves, proving this is a maintenance-signal-led incident
+    # M4 telemetry signature: vibration/temperature/motor_current should rise
+    # together post-incident while defect rate (above) barely moves
     m4_sensors = sensor_df[sensor_df["machine_id"] == "M4"]
     fig2, ax2 = plt.subplots(figsize=(10, 5))
     for sensor_name in ["vibration", "temperature", "motor_current"]:
         subset = m4_sensors[m4_sensors["sensor_name"] == sensor_name]
-        # Normalize each sensor to 0-1 so they're visually comparable on one axis
         vals = subset["sensor_value"]
         normalized = (vals - vals.min()) / (vals.max() - vals.min())
         ax2.plot(subset["cycle"], normalized, label=sensor_name)
@@ -342,4 +468,24 @@ if __name__ == "__main__":
     ax2.legend()
     plt.tight_layout()
     plt.savefig("data/m4_telemetry_signature.png")
+    plt.show()
+
+    # M5 diagnostic: defect rate should pulse around the incident batch window
+    # (gradual rise, gradual decay), while machine_health sensor stays flat throughout —
+    # proving this incident is batch-driven, not machine-driven
+    m5_prod = production_df[production_df["machine_id"] == "M5"].copy()
+    m5_prod["rolling_defect_rate"] = m5_prod["defect"].rolling(window=20).mean()
+    incident_row = batches_df[batches_df["is_incident_batch"]].iloc[0]
+
+    fig3, ax3 = plt.subplots(figsize=(10, 5))
+    ax3.plot(m5_prod["cycle"], m5_prod["rolling_defect_rate"], label="M5 defect rate")
+    ax3.axvspan(incident_row["introduced_cycle"],
+                incident_row["introduced_cycle"] + incident_row["duration_cycles"],
+                color="red", alpha=0.15, label=f"Bad batch {incident_row['batch_id']} active")
+    ax3.set_title("M5 — Material Batch Defect Pattern (should pulse, not step)")
+    ax3.set_xlabel("Production Cycle")
+    ax3.set_ylabel("Defect rate (rolling)")
+    ax3.legend()
+    plt.tight_layout()
+    plt.savefig("data/m5_batch_pattern.png")
     plt.show()
