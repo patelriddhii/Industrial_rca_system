@@ -1,3 +1,4 @@
 incident_id,machine_id,start_cycle,root_cause,description
 1,M1,600,abnormal_tool_wear_rate,Simulated lubrication failure causing 3x normal wear rate
 2,M2,400,abnormal_calibration_drift,Simulated sensor drift causing 4x normal calibration offset accumulation
+3,M4,500,bearing_degradation,"Simulated bearing fault causing 3.5x normal degradation rate, visible primarily through vibration/temperature/motor current"
